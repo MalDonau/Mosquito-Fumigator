@@ -3,9 +3,10 @@
 <head>
   <!-- Versión: SAFE 8 -->
   <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
   <title>Mosquito Fumigator — SAFE 8</title>
   <style>
-    body { margin:0; overflow:hidden; background:#000033; }
+    body { margin:0; overflow:hidden; background:#000033; display:flex; align-items:center; justify-content:center; height:100vh; min-height:100svh; }
     canvas { display:block; margin:0 auto; background:#001a33; touch-action:none; -ms-touch-action:none; user-select:none; -webkit-user-select:none; -webkit-touch-callout:none; -webkit-tap-highlight-color: rgba(0,0,0,0); }
     #hud { position:absolute; top:10px; left:50%; transform:translateX(-50%); color:#fff; font-family:Arial,sans-serif; text-align:center; }
     #instructions { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); font:700 42px/1.25 Arial, sans-serif; color:#d0e8ff; opacity:0; text-align:center; text-shadow:0 2px 10px rgba(0,0,0,.45); max-width:90vw; padding:0 12px; animation:fadeInOut 3s ease-in-out forwards; }
@@ -80,6 +81,24 @@ positionResetButton();
 window.addEventListener('resize', positionResetButton);
 window.addEventListener('scroll', positionResetButton);
 resetBtn.addEventListener('click', ()=>{ if(gameOver) reset(); });
+
+// ==== Escalado responsivo del canvas (contener 900x600 en el viewport) ====
+function fitCanvasToViewport(){
+  const vw = (window.visualViewport ? window.visualViewport.width : window.innerWidth);
+  const vh = (window.visualViewport ? window.visualViewport.height : window.innerHeight);
+  const pad = 8; // margen de seguridad
+  const maxW = Math.max(200, vw - pad*2);
+  const maxH = Math.max(200, vh - pad*2);
+  const scale = Math.min(maxW / canvas.width, maxH / canvas.height);
+  canvas.style.width  = (canvas.width * scale) + 'px';
+  canvas.style.height = (canvas.height * scale) + 'px';
+  // Reposicionar overlays dependientes del tamaño/posición del canvas
+  positionInstructions();
+  positionResetButton();
+}
+fitCanvasToViewport();
+window.addEventListener('resize', fitCanvasToViewport);
+window.addEventListener('orientationchange', fitCanvasToViewport);
 
 // ====== Inicio seguro ======
 let gameStarted = false;
@@ -299,6 +318,13 @@ function endSpray(){ if(spraying){ spraying=false; stopSprayHiss(); } }
 
 // --- Controles pointer/mouse/touch ---
 function isTouchEvt(e){ return e.pointerType === 'touch'; }
+// Mapea coords de pantalla (CSS) a coords internas del canvas (900x600)
+function cssToCanvas(clientX, clientY){
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  return { x: (clientX - rect.left) * scaleX, y: (clientY - rect.top) * scaleY };
+}
 function handlePointerDown(e){
   if(isTouchEvt(e)){
     isTouchMode = true;
@@ -306,7 +332,8 @@ function handlePointerDown(e){
     if(touchPrimaryId === null) touchPrimaryId = e.pointerId;
     const rect = canvas.getBoundingClientRect();
     if(e.pointerId === touchPrimaryId){
-      sprayX = e.clientX - rect.left; sprayY = e.clientY - rect.top;
+      const p = cssToCanvas(e.clientX, e.clientY);
+      sprayX = p.x; sprayY = p.y;
     }
     if(activeTouchIds.size >= 2 && !spraying) beginSpray();
     canvas.setPointerCapture(e.pointerId);
@@ -314,13 +341,19 @@ function handlePointerDown(e){
     e.preventDefault?.();
     return;
   }
-  if(!isTouchMode){ canvas.setPointerCapture(e.pointerId); beginSpray(); }
+  if(!isTouchMode){
+    const p = cssToCanvas(e.clientX, e.clientY);
+    sprayX = p.x; sprayY = p.y;
+    canvas.setPointerCapture(e.pointerId);
+    beginSpray();
+  }
 }
 function handlePointerMove(e){
   const rect=canvas.getBoundingClientRect();
   if(isTouchEvt(e)){
     if(e.pointerId === touchPrimaryId){
-      const x=e.clientX-rect.left, y=e.clientY-rect.top;
+      const p = cssToCanvas(e.clientX, e.clientY);
+      const x = p.x, y = p.y;
       const now=performance.now(); const dx=x-(lastMouseX??x); const dt=now-(lastMouseT??now);
       sprayX=x; sprayY=y;
       if(!paused && lastMouseX!==null && dt>0) processHS(dx,dt);
@@ -329,7 +362,7 @@ function handlePointerMove(e){
     e.preventDefault?.();
     return;
   }
-  sprayX=e.clientX-rect.left; sprayY=e.clientY-rect.top;
+  { const p = cssToCanvas(e.clientX, e.clientY); sprayX = p.x; sprayY = p.y; }
   if(paused) return;
   const now=performance.now(); const dx=(sprayX - (lastMouseX??sprayX)); const dt=now-(lastMouseT??now);
   if(lastMouseX!==null && dt>0) processHS(dx,dt);
