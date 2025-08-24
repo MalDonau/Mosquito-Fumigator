@@ -176,6 +176,7 @@ function spawnMosquito(){
 let lastMouseX=null, lastMouseT=null; let cdRefill=0; const COOLDOWN_MAX=6; let msgRecargar=0; let haloTimer=0;
 // Touch control state
 let isTouchMode=false; let touchPrimaryId=null; const activeTouchIds=new Set();
+let touchOffsetX=0, touchOffsetY=0; const touchPos=new Map();
 const SHAKE_WIN_S=0.8, SHAKE_SEG_MIN=40, SHAKE_FLIPS=2, SHAKE_VEL_MIN=800;
 let hs={t0:0,lastSign:0,segLen:0,maxV:0,flips:0};
 function resetHS(){ hs={t0:0,lastSign:0,segLen:0,maxV:0,flips:0}; }
@@ -327,17 +328,22 @@ function cssToCanvas(clientX, clientY){
 }
 function handlePointerDown(e){
   if(isTouchEvt(e)){
-    isTouchMode = true;
-    activeTouchIds.add(e.pointerId);
-    if(touchPrimaryId === null) touchPrimaryId = e.pointerId;
-    const rect = canvas.getBoundingClientRect();
+    activeTouchIds.delete(e.pointerId);
+    touchPos.delete(e.pointerId);
+    if(activeTouchIds.size < 2) endSpray();
     if(e.pointerId === touchPrimaryId){
-      const p = cssToCanvas(e.clientX, e.clientY);
-      sprayX = p.x; sprayY = p.y;
+      // reasignar primario si queda otro dedo
+      touchPrimaryId = null;
+      for(const id of activeTouchIds){ touchPrimaryId = id; break; }
+      // recalcular offset relativo con el nuevo primario
+      if(touchPrimaryId !== null){
+        const p = touchPos.get(touchPrimaryId);
+        if(p){ touchOffsetX = sprayX - p.x; touchOffsetY = sprayY - p.y; }
+        else { touchOffsetX = 0; touchOffsetY = 0; }
+      }
+      lastMouseX=null; lastMouseT=null;
     }
-    if(activeTouchIds.size >= 2 && !spraying) beginSpray();
-    canvas.setPointerCapture(e.pointerId);
-    initAudioOnce();
+    if(activeTouchIds.size===0){ isTouchMode=false; }
     e.preventDefault?.();
     return;
   }
