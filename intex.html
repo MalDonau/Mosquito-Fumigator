@@ -1,0 +1,783 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <!-- Versión: SAFE 8 -->
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>Mosquito Fumigator — SAFE 8</title>
+  <style>
+    body { margin:0; overflow:hidden; background:#000033; display:flex; align-items:center; justify-content:center; height:100vh; min-height:100svh; }
+    canvas { display:block; margin:0 auto; background:#001a33; touch-action:none; -ms-touch-action:none; user-select:none; -webkit-user-select:none; -webkit-touch-callout:none; -webkit-tap-highlight-color: rgba(0,0,0,0); }
+    #hud { position:absolute; top:10px; left:50%; transform:translateX(-50%); color:#fff; font-family:Arial,sans-serif; text-align:center; }
+    #instructions { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); font:700 42px/1.25 Arial, sans-serif; color:#d0e8ff; opacity:0; text-align:center; text-shadow:0 2px 10px rgba(0,0,0,.45); max-width:90vw; padding:0 12px; animation:fadeInOut 3s ease-in-out forwards; }
+    @keyframes fadeInOut { 0%{opacity:0} 20%{opacity:1} 80%{opacity:1} 100%{opacity:0} }
+
+    /* Botón de pausa */
+    #pauseBtn {
+      position:absolute; top:12px; right:12px; z-index:5;
+      background:#0b5ed7; color:#fff; border:none; border-radius:10px;
+      padding:10px 14px; font:600 14px system-ui, Arial, sans-serif; cursor:pointer;
+      box-shadow:0 4px 14px rgba(0,0,0,.3);
+    }
+    #pauseBtn:hover { filter:brightness(1.1); }
+
+/* Botón Reiniciar (visible solo en game over) */
+#resetBtn{
+  position:absolute; z-index:6; display:none;
+  background:#e91e63; color:#fff; border:none; border-radius:12px;
+  padding:14px 20px; font:700 18px system-ui, Arial, sans-serif; cursor:pointer;
+  box-shadow:0 6px 18px rgba(0,0,0,.35);
+}
+#resetBtn:hover{ filter:brightness(1.05); }
+  </style>
+</head>
+<body>
+  <button id="pauseBtn" type="button">⏸ Pausa</button>
+  <button id="resetBtn" type="button" style="display:none">🔁 Reiniciar</button>
+  <div id="hud">
+    <div id="reloadMessage"></div>
+  </div>
+  <div id="instructions">Fumiga a los mosquitos para que no despierten al bebé!</div>
+  <canvas id="gameCanvas" width="900" height="600"></canvas>
+  <!-- ÚNICO audio de archivo: llanto del bebé (misma carpeta) -->
+  <audio id="babyCry" src="./audio/cry.mp3" preload="auto"></audio>
+
+<script>
+// ====== Canvas & UI ======
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const instructions = document.getElementById('instructions');
+const babyCry = document.getElementById('babyCry');
+const pauseBtn = document.getElementById('pauseBtn');
+
+// Centrar instrucciones sobre el CANVAS (no sobre la ventana)
+function positionInstructions(){
+  const rect = canvas.getBoundingClientRect();
+  const x = rect.left + window.pageXOffset + rect.width/2;
+  const y = rect.top  + window.pageYOffset + rect.height/2;
+  instructions.style.left = x + 'px';
+  instructions.style.top  = y + 'px';
+  instructions.style.transform = 'translate(-50%,-50%)';
+}
+positionInstructions();
+window.addEventListener('resize', positionInstructions);
+window.addEventListener('scroll', positionInstructions);
+
+// Reset button element and positioning aligned to canvas center (un poco debajo del texto)
+const resetBtn = document.getElementById('resetBtn');
+function positionResetButton(){
+  const rect = canvas.getBoundingClientRect();
+  const x = rect.left + window.pageXOffset + rect.width/2;
+  const y = rect.top  + window.pageYOffset + rect.height/2 + 60; // debajo del mensaje
+  resetBtn.style.left = x + 'px';
+  resetBtn.style.top  = y + 'px';
+  resetBtn.style.transform = 'translate(-50%,-50%)';
+}
+function showResetButton(show){
+  resetBtn.style.display = show ? 'block' : 'none';
+  if(show) positionResetButton();
+}
+positionResetButton();
+window.addEventListener('resize', positionResetButton);
+window.addEventListener('scroll', positionResetButton);
+resetBtn.addEventListener('click', ()=>{ if(gameOver) reset(); });
+
+// ==== Escalado responsivo del canvas (contener 900x600 en el viewport) ====
+function fitCanvasToViewport(){
+  const vw = (window.visualViewport ? window.visualViewport.width : window.innerWidth);
+  const vh = (window.visualViewport ? window.visualViewport.height : window.innerHeight);
+  const pad = 8; // margen de seguridad
+  const maxW = Math.max(200, vw - pad*2);
+  const maxH = Math.max(200, vh - pad*2);
+  const scale = Math.min(maxW / canvas.width, maxH / canvas.height);
+  canvas.style.width  = (canvas.width * scale) + 'px';
+  canvas.style.height = (canvas.height * scale) + 'px';
+  // Reposicionar overlays dependientes del tamaño/posición del canvas
+  positionInstructions();
+  positionResetButton();
+}
+fitCanvasToViewport();
+window.addEventListener('resize', fitCanvasToViewport);
+window.addEventListener('orientationchange', fitCanvasToViewport);
+
+// ====== Inicio seguro ======
+let gameStarted = false;
+function safeStart(){ if(gameStarted) return; gameStarted = true; instructions.style.display='none'; initAudioOnce(); startGame(); startLullaby(); }
+instructions.addEventListener('animationend', safeStart);
+instructions.addEventListener('webkitAnimationEnd', safeStart);
+instructions.addEventListener('click', safeStart);
+setTimeout(safeStart, 3200);
+
+// ====== Fondo estrellado ======
+const stars = Array.from({length:120}, () => ({
+  x: Math.random()*canvas.width,
+  y: Math.random()*canvas.height,
+  r: 0.5 + Math.random()*1.8,
+  tw: (Math.random()*0.06) * (Math.random()<0.5?-1:1)
+}));
+function drawBackground(){
+  ctx.fillStyle = '#001a33';
+  ctx.fillRect(0,0,canvas.width,canvas.height);
+  for(const s of stars){
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, Math.max(0.3, Math.min(2.2, s.r)), 0, Math.PI*2);
+    ctx.fillStyle = 'rgba(208,232,255,0.9)';
+    ctx.fill();
+    s.r += s.tw; if(s.r>2.2 || s.r<0.4) s.tw *= -1;
+  }
+}
+
+// ====== Sprites (definición y carga) ======
+const mosquitoImg = new Image();
+const babyImg = new Image();
+const sprayImg = new Image();
+const cryImg = new Image();
+const spritesReady = { mosquito:false, baby:false, spray:false, cry:false };
+mosquitoImg.src = './sprites/mosquito.png';
+babyImg.src     = './sprites/bebe.png';
+sprayImg.src    = './sprites/spray.png';
+cryImg.src    = './sprites/cry.png';
+mosquitoImg.onload = () => { spritesReady.mosquito = true; };
+babyImg.onload     = () => { spritesReady.baby = true; };
+sprayImg.onload    = () => { spritesReady.spray = true; };
+cryImg.onload    = () => { spritesReady.cry = true; };
+const MOSQ_W = 48, MOSQ_H = 48;
+const BABY_W = 140, BABY_H = 140;
+const SPRAY_W = 64,  SPRAY_H = 96;
+function drawSprite(img, x, y, w, h){ ctx.drawImage(img, x - w/2, y - h/2, w, h); }
+
+// ====== Mecánicas base ======
+const MAX_SPRAY = 6.0; // s de pulsado total
+let sprayX = canvas.width/2, sprayY = canvas.height-100;
+let spraying=false; let sprayLeft=MAX_SPRAY;
+
+// Partículas del aerosol
+let sprayParticles=[]; let sprayEmitAcc=0;
+
+function coneHalf(){ const t=Math.max(0,Math.min(1,sprayLeft/MAX_SPRAY)); const deg=3+(40-3)*t; return (deg*Math.PI/180)/2; }
+function coneRange(){ const t=Math.max(0,Math.min(1,sprayLeft/MAX_SPRAY)); return 120+(240-120)*t; }
+function inSprayCone(px,py){ const dx=px-sprayX, dy=py-sprayY; const d=Math.hypot(dx,dy); if(d>coneRange()) return false; const cos=(-dy)/(d||1e-6); const a=Math.acos(Math.max(-1,Math.min(1,cos))); return a<=coneHalf(); }
+
+const baby={x:canvas.width/2,y:canvas.height-60,r:28};
+let gameOver=false, timeAlive=0, best=0, paused=false;
+
+let audioPausedByPause=false, babyCryWasPlaying=false;
+
+const mosq=[]; let spawnEvery=2.0, spawnT=0, spawnHold=0, spawnNextCap=10, spawnRamp=0, spawnEveryTarget=2.0; const TO_BABY_S=5.0; const SPAWN_RAMP_DUR=4.0; const SPAWN_RAMP_START_FACTOR=2.0;
+function spawnMosquito(){
+  let x,y; const edge=Math.random();
+  if(edge<0.5){ x=Math.random()*canvas.width; y=-30-Math.random()*40; }
+  else { const left=Math.random()<0.5; x=left?-30:canvas.width+30; y=Math.random()*(canvas.height*0.5); }
+  const r=6, dx=baby.x-x, dy=baby.y-y; const dist=Math.hypot(dx,dy)||1; const speed=dist/TO_BABY_S; const vx=(dx/dist)*speed, vy=(dy/dist)*speed;
+  mosq.push({x,y,r,vx,vy,dead:false,death:0,wobble:Math.random()*Math.PI*2, stuck:false, dirX: vx>0?1:-1});
+}
+
+// ====== Shake HORIZONTAL estricto ======
+let lastMouseX=null, lastMouseT=null; let cdRefill=0; const COOLDOWN_MAX=6; let msgRecargar=0; let haloTimer=0;
+// Touch control state
+let isTouchMode=false; let touchPrimaryId=null; const activeTouchIds=new Set();
+let lastTouchX=null, lastTouchY=null, lastTouchT=null;
+const SHAKE_WIN_S=0.8, SHAKE_SEG_MIN=40, SHAKE_FLIPS=2, SHAKE_VEL_MIN=800;
+let hs={t0:0,lastSign:0,segLen:0,maxV:0,flips:0};
+function resetHS(){ hs={t0:0,lastSign:0,segLen:0,maxV:0,flips:0}; }
+function processHS(dx,dt){
+  const now=performance.now();
+  if(hs.t0===0) hs.t0=now; if(now-hs.t0>SHAKE_WIN_S*1000){ resetHS(); hs.t0=now; }
+  const sign = dx>0?1:dx<0?-1:0; if(sign===0) return;
+  const v = dt>0? (Math.abs(dx)/dt)*1000:0;
+  if(hs.lastSign===0){ hs.lastSign=sign; hs.segLen=Math.abs(dx); hs.maxV=v; return; }
+  if(sign===hs.lastSign){ hs.segLen+=Math.abs(dx); if(v>hs.maxV) hs.maxV=v; return; }
+  // Cambio de dirección: reproducir un "shaker" sutil proporcional a la intensidad del agite
+  if(hs.segLen>=SHAKE_SEG_MIN*0.5 && hs.maxV>=SHAKE_VEL_MIN*0.5){
+    const intensity = Math.min(1, hs.maxV / (SHAKE_VEL_MIN*1.5));
+    playShaker(intensity);
+  }
+  if(hs.segLen>=SHAKE_SEG_MIN && hs.maxV>=SHAKE_VEL_MIN){ hs.flips++; }
+  if(hs.flips>=SHAKE_FLIPS && cdRefill<=0){ tryRefill(); resetHS(); return; }
+  hs.lastSign=sign; hs.segLen=Math.abs(dx); hs.maxV=v;
+}
+function tryRefill(){ sprayLeft=MAX_SPRAY; cdRefill=COOLDOWN_MAX; msgRecargar=0; haloTimer=0.6; playRefillTick(); }
+
+// >>> Sistema de partículas del aerosol (v1 estable)
+function emitSprayParticles(dt){
+  if(!spraying || sprayLeft<=0) return;
+  const rate = 520; // partículas por segundo (x2)
+  sprayEmitAcc += rate * dt;
+  let n = sprayEmitAcc|0;
+  if(n<=0) return;
+  sprayEmitAcc -= n;
+  const H = coneHalf();
+  const R = coneRange();
+  for(let i=0;i<n;i++){
+    const ang = -Math.PI/2 + (Math.random()*2-1) * H;
+    const speed = (520 + Math.random()*720) * 1.3; // +30% velocidad (mín y máx)
+    const vx = Math.cos(ang)*speed;
+    const vy = Math.sin(ang)*speed;
+    const off = 8 + Math.random()*14; // arranque desde la boquilla
+    const x = sprayX + Math.cos(ang)*off;
+    const y = sprayY + Math.sin(ang)*off;
+    // Duración ajustada para que lleguen a la punta del cono
+    const distToTip = Math.max(0, R - off);
+    const baseT = distToTip / speed; // tiempo ideal para alcanzar el arco
+    const ttl = Math.min(2.0, Math.max(0.45, baseT * 2.0)); // factor 2x para asegurar llegada
+    const r = 1 + Math.random()*2.2;
+    sprayParticles.push({ x, y, vx, vy, life: ttl, ttl: ttl, r });
+  }
+  if(sprayParticles.length>1800) sprayParticles.splice(0, sprayParticles.length-1800); // cap x2
+}
+function updateSprayParticles(dt){
+  emitSprayParticles(dt);
+  const swirl = 40; const drag = 0.9;
+  for(let i=sprayParticles.length-1;i>=0;i--){
+    const p = sprayParticles[i];
+    p.vx += (Math.random()-0.5)*swirl*dt;
+    p.vy += (Math.random()-0.5)*swirl*dt;
+    p.vy -= 28*dt; // flotabilidad hacia arriba
+    p.vx *= drag; p.vy *= drag;
+    p.x += p.vx*dt; p.y += p.vy*dt;
+    p.life -= dt;
+    if(p.life<=0){ sprayParticles.splice(i,1); }
+  }
+}
+function drawSprayParticles(R,H){
+  if(sprayParticles.length===0) return;
+  ctx.save();
+  // recorte al cono
+  ctx.beginPath(); ctx.moveTo(sprayX,sprayY); ctx.arc(sprayX,sprayY,R,-Math.PI/2-H,-Math.PI/2+H); ctx.closePath();
+  ctx.clip();
+  const prevComp = ctx.globalCompositeOperation;
+  ctx.globalCompositeOperation = 'lighter';
+  for(const p of sprayParticles){
+    const a = Math.max(0, Math.min(1, p.life / p.ttl));
+    ctx.globalAlpha = a * 0.6;
+    ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI*2);
+    ctx.fillStyle = 'rgba(180,240,255,1)';
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1; ctx.globalCompositeOperation = prevComp; ctx.restore();
+}
+
+// Pequeño trofeo para destacar "Record"
+function drawTrophy(ctx, cx, cy, s=1, color='#ffb74d'){
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.scale(s, s);
+  ctx.fillStyle = color;
+  ctx.strokeStyle = 'rgba(0,0,0,0.25)';
+  ctx.lineWidth = 1;
+  // Copa
+  ctx.beginPath();
+  ctx.moveTo(-6,-4); ctx.lineTo(6,-4); ctx.lineTo(4,4); ctx.lineTo(-4,4); ctx.closePath();
+  ctx.fill(); ctx.stroke();
+  // Asas
+  ctx.beginPath(); ctx.arc(-7,-2,3,Math.PI*0.2,Math.PI*1.2); ctx.stroke();
+  ctx.beginPath(); ctx.arc(7,-2,3,-Math.PI*0.2,Math.PI*0.8); ctx.stroke();
+  // Tallo
+  ctx.fillRect(-2,4,4,4);
+  // Base
+  ctx.fillRect(-6,8,12,3);
+  ctx.restore();
+}
+
+// ====== Pausa ======
+function setPaused(p){
+  if(paused===p) return;
+  paused = p;
+  if(paused){
+    // Detener interacciones y audio
+    endSpray();
+    setMosquitoBuzzLevel(0);
+    // Suspender WebAudio
+    if(ACTX && ACTX.state === 'running'){
+      ACTX.suspend();
+      audioPausedByPause = true;
+    }
+    // Pausar llanto si estaba sonando
+    try {
+      babyCryWasPlaying = !babyCry.paused && babyCry.currentTime > 0 && !babyCry.ended;
+      babyCry.pause();
+    } catch(_) {}
+  } else {
+    // Reanudar WebAudio si lo pausamos nosotros
+    if(audioPausedByPause && ACTX){
+      ACTX.resume();
+      audioPausedByPause = false;
+    }
+    // Reanudar llanto si estaba sonando al pausar
+    if(babyCryWasPlaying){
+      try { babyCry.play(); } catch(_) {}
+      babyCryWasPlaying = false;
+    }
+  }
+  pauseBtn.textContent = paused ? '▶ Reanudar' : '⏸ Pausa';
+}
+function togglePause(){ setPaused(!paused); }
+
+// ====== Input ======
+function beginSpray(){ if(!gameOver && !paused && sprayLeft>0 && !spraying){ spraying=true; startSprayHiss(); } }
+function endSpray(){ if(spraying){ spraying=false; stopSprayHiss(); } }
+
+// --- Controles pointer/mouse/touch ---
+function isTouchEvt(e){ return e.pointerType === 'touch'; }
+// Mapea coords de pantalla (CSS) a coords internas del canvas (900x600)
+function cssToCanvas(clientX, clientY){
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  return { x: (clientX - rect.left) * scaleX, y: (clientY - rect.top) * scaleY };
+}
+function handlePointerDown(e){
+  if(isTouchEvt(e)){
+    isTouchMode = true;
+    activeTouchIds.add(e.pointerId);
+    if(touchPrimaryId === null){
+      touchPrimaryId = e.pointerId;
+      const p = cssToCanvas(e.clientX, e.clientY);
+      lastTouchX = p.x; lastTouchY = p.y; lastTouchT = performance.now();
+      // Importante: NO movemos el aerosol aquí (control relativo)
+    }
+    if(activeTouchIds.size >= 2 && !spraying) beginSpray();
+    canvas.setPointerCapture(e.pointerId);
+    initAudioOnce();
+    e.preventDefault?.();
+    return;
+  }
+  if(!isTouchMode){
+    const p = cssToCanvas(e.clientX, e.clientY);
+    sprayX = p.x; sprayY = p.y;
+    canvas.setPointerCapture(e.pointerId);
+    beginSpray();
+  }
+}
+function handlePointerMove(e){
+  if(isTouchEvt(e)){
+    if(e.pointerId === touchPrimaryId){
+      const p = cssToCanvas(e.clientX, e.clientY);
+      const now = performance.now();
+      if(lastTouchX===null || lastTouchY===null){ lastTouchX=p.x; lastTouchY=p.y; lastTouchT=now; e.preventDefault?.(); return; }
+      const dx = p.x - lastTouchX;
+      const dt = now - (lastTouchT||now);
+      const dy = p.y - lastTouchY;
+      // Mover aerosol por delta (control relativo)
+      sprayX = Math.max(0, Math.min(canvas.width,  sprayX + dx));
+      sprayY = Math.max(0, Math.min(canvas.height, sprayY + dy));
+      if(!paused && dt>0) processHS(dx, dt);
+      lastTouchX = p.x; lastTouchY = p.y; lastTouchT = now;
+    }
+    e.preventDefault?.();
+    return;
+  }
+  // Mouse
+  { const p = cssToCanvas(e.clientX, e.clientY); sprayX = p.x; sprayY = p.y; }
+  if(paused) return;
+  const now=performance.now(); const dx=(sprayX - (lastMouseX??sprayX)); const dt=now-(lastMouseT??now);
+  if(lastMouseX!==null && dt>0) processHS(dx,dt);
+  lastMouseX=sprayX; lastMouseT=now;
+}
+function handlePointerUp(e){
+  if(isTouchEvt(e)){
+    activeTouchIds.delete(e.pointerId);
+    if(activeTouchIds.size < 2) endSpray();
+    if(e.pointerId === touchPrimaryId){
+      // reasignar primario si queda otro dedo
+      touchPrimaryId = null;
+      for(const id of activeTouchIds){ touchPrimaryId = id; break; }
+      // No movemos nada; el nuevo primario empezará a mover cuando reciba su primer move
+      lastTouchX=null; lastTouchY=null; lastTouchT=null;
+    }
+    if(activeTouchIds.size===0){ isTouchMode=false; }
+    e.preventDefault?.();
+    return;
+  }
+  endSpray();
+}
+canvas.addEventListener('pointerdown', handlePointerDown);
+canvas.addEventListener('pointermove', handlePointerMove);
+canvas.addEventListener('pointerup', handlePointerUp);
+canvas.addEventListener('pointercancel', handlePointerUp);
+canvas.addEventListener('pointerleave', e=>{ if(!isTouchMode) endSpray(); });
+// fallbacks mouse (ignorados si hay touch)
+canvas.addEventListener('mousedown', e=>{ if(isTouchMode) return; beginSpray(); });
+canvas.addEventListener('mouseup',   e=>{ if(isTouchMode) return; endSpray(); });
+
+pauseBtn.addEventListener('click', togglePause);
+
+document.addEventListener('keydown',e=>{
+  if(e.code==='Space'){ e.preventDefault(); togglePause(); return; }
+  if((e.key==='r'||e.key==='R') && cdRefill<=0 && !paused) tryRefill();
+  if(e.key==='Enter' && gameOver) reset();
+  initAudioOnce();
+});
+
+function startGame(){ /* arranque */ }
+function reset(){
+  mosq.length=0; spawnEvery=2.0; spawnT=0; spawnHold=0; spawnRamp=0; spawnEveryTarget=2.0; spawnNextCap=10; sprayLeft=MAX_SPRAY; cdRefill=0; msgRecargar=0; haloTimer=0;
+  spraying=false; timeAlive=0; gameOver=false; resetHS(); showResetButton(false);
+  sprayParticles.length=0;
+  stopSprayHiss(true); setMosquitoBuzzLevel(0);
+  try { babyCry.pause(); babyCry.currentTime = 0; } catch(_) {}
+  stopGameOverMusic(); startLullaby();
+}
+
+function update(dt){ if(!gameStarted || paused) return; if(!gameOver) timeAlive+=dt;
+  updateSprayParticles(dt);
+  if(haloTimer>0) haloTimer-=dt; if(cdRefill>0){ cdRefill-=dt; if(cdRefill<0) cdRefill=0; }
+  if(spraying && sprayLeft>0){ sprayLeft-=dt; if(sprayLeft<=0){ sprayLeft=0; endSpray(); msgRecargar=2; } }
+  if(msgRecargar>0){
+    const cx = canvas.width/2;
+    const y0 = 92;
+    const blink = (Math.floor(Date.now()/300)%2===0);
+    if(blink){
+      ctx.textAlign='center';
+      ctx.fillStyle='#ff4444';
+      ctx.font='bold 28px Arial';
+      ctx.fillText('¡RECARGAR!', cx, y0);
+      ctx.font='bold 22px Arial';
+      ctx.fillText('←   →', cx, y0+26);
+      ctx.font='16px Arial';
+      ctx.fillText('agita el aerosol', cx, y0+46);
+      ctx.font='bold 22px Arial';
+      ctx.fillText('←   →', cx, y0+70);
+      ctx.textAlign='left';
+    }
+  }
+  
+  let aliveCount=0;
+  for(const m of mosq){
+    if(m.dead){ m.death+=dt*2; continue; }
+    if(!m.stuck){
+      m.x+=m.vx*dt; m.y+=m.vy*dt; m.wobble+=dt*8; m.x+=Math.sin(m.wobble)*90*dt;
+      if(m.vx!==0) m.dirX = m.vx>0?1:-1;
+    }
+    const db=Math.hypot(m.x-baby.x,m.y-baby.y);
+    if(db<=m.r+baby.r){
+      const ux = (m.x - baby.x) / (db || 1e-6);
+      const uy = (m.y - baby.y) / (db || 1e-6);
+      m.x = baby.x + (baby.r + m.r) * ux;
+      m.y = baby.y + (baby.r + m.r) * uy;
+      m.vx = 0; m.vy = 0; m.stuck = true;
+      if (m.x - baby.x !== 0) m.dirX = (m.x - baby.x) > 0 ? 1 : -1;
+      if(!gameOver){ gameOver=true; best=Math.max(best,timeAlive); endSpray(); stopLullaby(); startGameOverMusic(); setMosquitoBuzzLevel(0); try{ babyCry.currentTime=0; babyCry.play(); }catch(_){/* móviles bloquean hasta gesto */} }
+    }
+    if(!gameOver && !m.stuck && spraying && sprayLeft>0 && inSprayCone(m.x,m.y)){ m.dead=true; m.death=0.01; playPop(); }
+    if(!m.dead && !m.stuck) aliveCount++;
+  }
+  // Control de oleadas: pausa 4s + rampa 4s (exponencial) hasta volver a la frecuencia "anterior"
+  // 1) Pausa
+  if (spawnHold > 0) {
+    spawnHold -= dt;
+    if (spawnHold <= 0) {
+      spawnHold = 0;
+      spawnRamp = SPAWN_RAMP_DUR; // iniciar rampa
+      spawnT = 0; // reiniciar acumulador para una rampa prolija
+    }
+  }
+  // 2) Activar nueva pausa solo cuando NO estamos en rampa
+  if (spawnHold === 0 && spawnRamp === 0 && aliveCount >= spawnNextCap) {
+    spawnHold = 4.0;
+    spawnEveryTarget = spawnEvery; // guardar la frecuencia "anterior"
+    spawnNextCap += 2;            // siguiente umbral: +2 (12,14,16,...)
+  }
+  // 3) Spawning con rampa exponencial hacia la frecuencia guardada
+  if (spawnHold === 0) {
+    let interval = spawnEvery;
+    if (spawnRamp > 0) {
+      const p = 1 - Math.max(0, Math.min(1, spawnRamp / SPAWN_RAMP_DUR)); // 0→inicio, 1→fin
+      interval = spawnEveryTarget * Math.pow(SPAWN_RAMP_START_FACTOR, 1 - p); // exp decay hacia target
+      spawnRamp -= dt;
+      if (spawnRamp < 0) { spawnRamp = 0; spawnEvery = spawnEveryTarget; }
+    }
+    spawnT += dt;
+    if (spawnT >= interval) {
+      spawnT = 0;
+      spawnMosquito();
+      // Durante la rampa NO reducimos spawnEvery; solo en fase normal
+      if (spawnRamp === 0 && spawnEvery > 0.3) spawnEvery -= 0.04;
+    }
+  }
+
+  // Nivel de zumbido según cantidad de mosquitos vivos (volumen reducido)
+  setMosquitoBuzzLevel(Math.min(0.09, 0.02*aliveCount));
+}
+
+function draw(){
+  drawBackground();
+  if(!gameStarted) return;
+  const R=Math.max(0,coneRange()), H=coneHalf();
+  // Cono oculto: no dibujamos el área triangular; mantenemos solo las partículas
+
+  if(haloTimer>0){
+    const a=Math.max(0,Math.min(1,haloTimer/0.6));
+    const rad=60+(1-a)*40;
+    const g=ctx.createRadialGradient(sprayX,sprayY,0,sprayX,sprayY,rad);
+    g.addColorStop(0,`rgba(80,255,160,${0.35*a})`);
+    g.addColorStop(1,'rgba(80,255,160,0)');
+    ctx.fillStyle=g; ctx.beginPath(); ctx.arc(sprayX,sprayY,rad,0,Math.PI*2); ctx.fill();
+  }
+  drawSprayParticles(R,H);
+  if (spritesReady.spray) {
+    ctx.drawImage(sprayImg, sprayX - SPRAY_W/2, sprayY - SPRAY_H/2, SPRAY_W, SPRAY_H);
+    const ratio = Math.max(0, Math.min(1, sprayLeft / MAX_SPRAY));
+    let col='#2ecc71'; if(sprayLeft<MAX_SPRAY*0.66) col='#ffd166'; if(sprayLeft<MAX_SPRAY*0.33) col='#ff6b6b';
+    const winW = SPRAY_W * 0.28;
+    const winH = SPRAY_H * 0.36;
+    const winX = sprayX - winW/2;
+    const winY_base = sprayY + SPRAY_H/2; // base del aerosol
+    const winY = winY_base - 10 - winH;   // 10px por encima de la base
+    ctx.fillStyle = 'rgba(0,0,0,0.25)';
+    ctx.fillRect(winX, winY, winW, winH);
+    ctx.fillStyle = col;
+    ctx.fillRect(winX+2, winY + (1-ratio)*(winH-4), winW-4, (winH-4)*ratio);
+  } else {
+    ctx.fillStyle='#9aa3ad'; ctx.fillRect(sprayX-10,sprayY-30,20,30);
+    let col='#2ecc71'; if(sprayLeft<MAX_SPRAY*0.66) col='#ffd166'; if(sprayLeft<MAX_SPRAY*0.33) col='#ff6b6b';
+    ctx.fillStyle=col; ctx.fillRect(sprayX-5,sprayY-25,10,Math.max(0,(sprayLeft/MAX_SPRAY)*25));
+  }
+  if ((gameOver && spritesReady.cry) || spritesReady.baby) { const img = (gameOver && spritesReady.cry) ? cryImg : babyImg; drawSprite(img, baby.x, baby.y + 10, BABY_W, BABY_H); }
+  else { ctx.beginPath(); ctx.arc(baby.x,baby.y,baby.r+18,0,Math.PI*2); ctx.strokeStyle='rgba(255,128,170,0.35)'; ctx.lineWidth=3; ctx.stroke(); ctx.beginPath(); ctx.arc(baby.x,baby.y,baby.r,0,Math.PI*2); ctx.fillStyle='#ff8bb0'; ctx.fill(); }
+  for(const m of mosq){
+    if(m.dead){
+      if(m.death>0){
+        ctx.beginPath(); ctx.arc(m.x,m.y,m.r+m.death*25,0,Math.PI*2);
+        ctx.fillStyle=`rgba(255,120,0,${1-m.death})`; ctx.fill();
+      }
+      continue;
+    }
+    if (spritesReady.mosquito) {
+      const flip = m.dirX > 0;
+      ctx.save();
+      ctx.translate(m.x, m.y);
+      if(flip) ctx.scale(-1, 1);
+      ctx.drawImage(mosquitoImg, -MOSQ_W/2, -MOSQ_H/2, MOSQ_W, MOSQ_H);
+      ctx.restore();
+    } else {
+      ctx.beginPath(); ctx.arc(m.x,m.y,m.r,0,Math.PI*2); ctx.fillStyle='#000'; ctx.fill();
+    }
+  }
+  ctx.fillStyle='#fff'; ctx.font='16px Arial';
+  ctx.fillText('Spray: '+sprayLeft.toFixed(1)+'s',12,22);
+  ctx.fillText('Tiempo dormido: '+timeAlive.toFixed(1),12,62);
+  // Trofeo + Record destacado
+  const recY = 82; drawTrophy(ctx, 20, recY-8, 1.0, '#ffb74d');
+  ctx.fillStyle='#ff9800'; ctx.font='bold 16px Arial';
+  ctx.fillText('Record: '+best.toFixed(1),34,recY);
+  ctx.fillStyle='#fff'; ctx.font='16px Arial';
+  if(cdRefill>0){
+    const BAR_W=220,BAR_H=12,PAD=16; const ratio=Math.max(0,Math.min(1,cdRefill/COOLDOWN_MAX));
+    const xRight=canvas.width-PAD; const xFrame=xRight-BAR_W; const yBar=canvas.height-PAD-BAR_H-18;
+    ctx.strokeStyle='rgba(255,255,255,0.35)'; ctx.lineWidth=2; ctx.strokeRect(xFrame,yBar,BAR_W,BAR_H);
+    ctx.fillStyle='rgba(255,255,255,0.12)'; ctx.fillRect(xFrame,yBar,BAR_W,BAR_H);
+    const w=Math.round(BAR_W * ratio); ctx.fillStyle='#3ddc84'; ctx.fillRect(xRight-w,yBar,w,BAR_H);
+    ctx.textAlign='right'; ctx.fillStyle='#3ddc84'; ctx.font='14px Arial'; ctx.fillText('Recarga en: '+cdRefill.toFixed(1)+'s  (agita el aerosol!)', xRight, yBar+BAR_H+16); ctx.textAlign='left';
+  }
+  if(gameOver){
+    showResetButton(true);
+    ctx.fillStyle='rgba(0,0,0,0.6)'; ctx.fillRect(0,0,canvas.width,canvas.height);
+    ctx.fillStyle='#fff'; ctx.textAlign='center';
+    ctx.font='bold 28px Arial'; ctx.fillText('¡El bebé se despertó!', canvas.width/2, canvas.height/2-40);
+    ctx.font='16px Arial';
+    { const baseY = canvas.height/2-12; const centerX = canvas.width/2;
+      const seg1 = 'Tiempo dormido: '+timeAlive.toFixed(1)+'  •  ';
+      const seg2 = 'Record: '+best.toFixed(1);
+      const iconW = 16; // ancho reservado para el trofeo
+      const totalWidth = ctx.measureText(seg1).width + iconW + 4 + ctx.measureText(seg2).width;
+      const startX = centerX - totalWidth/2;
+      ctx.textAlign='left';
+      ctx.fillStyle='#fff'; ctx.fillText(seg1, startX, baseY);
+      // Trofeo centrado verticalmente con el texto
+      drawTrophy(ctx, startX + ctx.measureText(seg1).width + iconW/2, baseY-8, 1.0, '#ffb74d');
+      ctx.fillStyle='#ff9800'; ctx.font='bold 16px Arial';
+      ctx.fillText(seg2, startX + ctx.measureText(seg1).width + iconW + 4, baseY);
+      ctx.textAlign='center'; }
+    
+    ctx.fillText('Enter para reiniciar', canvas.width/2, canvas.height/2+12);
+    ctx.textAlign='left';
+  } else if (paused) {
+    ctx.fillStyle='rgba(0,0,0,0.5)'; ctx.fillRect(0,0,canvas.width,canvas.height);
+    ctx.fillStyle='#fff'; ctx.textAlign='center'; ctx.font='bold 28px Arial';
+    ctx.fillText('Pausado', canvas.width/2, canvas.height/2);
+    ctx.font='16px Arial'; ctx.fillText('Espacio para reanudar', canvas.width/2, canvas.height/2+26);
+    ctx.textAlign='left';
+  }
+}
+
+// ====== AUDIO SINTETIZADO ======
+let ACTX=null, master=null, startedAudio=false;
+let sprayNoiseBuf=null; // buffer de ruido pre-generado
+let activeSpray=null;   // instancia viva del spray (BufferSource + Gain)
+let mosqGain=null, mosqOscA=null, mosqOscB=null, mosqVibrLFO=null, mosqVibrGain=null;
+let lastShakerT=0; // rate-limit para el sonido de agite
+
+// Música (canción de cuna + game over)
+let musicMaster=null;                 // Ganancia global de música
+let lullabyOut=null, lullabyLPF=null; // Bus de cuna
+let goOut=null;                       // Bus de game over
+let lullabyTimer=null, lullabyNext=0, lullabyStep=0, lullabyOn=false;
+let goTimer=null, goNext=0, goStep=0, goOn=false;
+
+function initAudioOnce(){
+  if(startedAudio) return;
+  startedAudio=true;
+  ACTX = new (window.AudioContext||window.webkitAudioContext)();
+  master = ACTX.createGain(); master.gain.value=0.8; master.connect(ACTX.destination);
+
+  // Música master
+  musicMaster = ACTX.createGain(); musicMaster.gain.value = 0.45; musicMaster.connect(master);
+
+  // Lullaby chain (suave con lowpass)
+  lullabyOut = ACTX.createGain(); lullabyOut.gain.value = 0.0; // fade in luego
+  lullabyLPF = ACTX.createBiquadFilter(); lullabyLPF.type='lowpass'; lullabyLPF.frequency.value=2500; lullabyLPF.Q.value=0.2;
+  lullabyOut.connect(lullabyLPF).connect(musicMaster);
+
+  // Game Over chain (un poco más presente)
+  goOut = ACTX.createGain(); goOut.gain.value = 0.0; goOut.connect(musicMaster);
+
+  // Prepara buffer de ruido (spray)
+  sprayNoiseBuf = ACTX.createBuffer(1, ACTX.sampleRate*2, ACTX.sampleRate);
+  const data = sprayNoiseBuf.getChannelData(0);
+  for(let i=0;i<data.length;i++){ data[i] = (Math.random()*2-1); }
+
+  // --- Zumbido de mosquitos (siempre listo; volumen variable) ---
+  mosqGain = ACTX.createGain(); mosqGain.gain.value=0.0; mosqGain.connect(master);
+  mosqOscA = ACTX.createOscillator(); mosqOscB = ACTX.createOscillator();
+  mosqOscA.type='sawtooth'; mosqOscB.type='sawtooth';
+  mosqOscA.frequency.value=520; mosqOscB.frequency.value=620;
+  mosqVibrLFO = ACTX.createOscillator(); mosqVibrLFO.type='sine'; mosqVibrLFO.frequency.value=6; mosqVibrLFO.start();
+  mosqVibrGain = ACTX.createGain(); mosqVibrGain.gain.value=8;
+  mosqVibrLFO.connect(mosqVibrGain);
+  mosqVibrGain.connect(mosqOscA.frequency);
+  mosqVibrGain.connect(mosqOscB.frequency);
+  mosqOscA.connect(mosqGain); mosqOscB.connect(mosqGain);
+  mosqOscA.start(); mosqOscB.start();
+}
+
+// ===== Spray: crear/detener SOLO en click =====
+function startSprayHiss(){
+  if(!ACTX || activeSpray) return;
+  const noise = ACTX.createBufferSource();
+  noise.buffer = sprayNoiseBuf; noise.loop = true;
+  const filter = ACTX.createBiquadFilter(); filter.type='bandpass'; filter.frequency.value=2800; filter.Q.value=0.9;
+  const gain = ACTX.createGain(); gain.gain.value=0.0001; // empieza bajo
+  noise.connect(filter).connect(gain).connect(master);
+  const t=ACTX.currentTime; gain.gain.exponentialRampToValueAtTime(0.32, t+0.06);
+  noise.start();
+  activeSpray = {noise, gain};
+}
+function stopSprayHiss(immediate=false){
+  if(!ACTX || !activeSpray) return;
+  const {noise, gain} = activeSpray; const t=ACTX.currentTime;
+  const endT = immediate? t+0.01 : t+0.12;
+  try { gain.gain.exponentialRampToValueAtTime(0.0001, endT); noise.stop(endT+0.01); } catch(_){ }
+  activeSpray = null;
+}
+
+function setMosquitoBuzzLevel(level){ if(!ACTX) return; const t=ACTX.currentTime; mosqGain.gain.cancelScheduledValues(t); mosqGain.gain.linearRampToValueAtTime(level, t+0.08); }
+
+function playPop(){ if(!ACTX) return; const t=ACTX.currentTime; const buf = ACTX.createBuffer(1, ACTX.sampleRate*0.2, ACTX.sampleRate); const arr = buf.getChannelData(0); for(let i=0;i<arr.length;i++){ arr[i] = (Math.random()*2-1) * (1 - i/arr.length); } const src = ACTX.createBufferSource(); src.buffer=buf; src.start(); const hp = ACTX.createBiquadFilter(); hp.type='highpass'; hp.frequency.value=1500; hp.Q.value=0.7; const g = ACTX.createGain(); g.gain.setValueAtTime(0.22, t); g.gain.exponentialRampToValueAtTime(0.0001, t+0.18); src.connect(hp).connect(g).connect(master); const osc = ACTX.createOscillator(); osc.type='triangle'; osc.frequency.setValueAtTime(200, t); osc.frequency.exponentialRampToValueAtTime(1200, t+0.06); const gg = ACTX.createGain(); gg.gain.setValueAtTime(0.15, t); gg.gain.exponentialRampToValueAtTime(0.0001, t+0.08); osc.connect(gg).connect(master); osc.start(t); osc.stop(t+0.09); }
+function playRefillTick(){ if(!ACTX) return; const t=ACTX.currentTime; const o=ACTX.createOscillator(); o.type='square'; o.frequency.value=880; const g=ACTX.createGain(); g.gain.value=0.12; o.connect(g).connect(master); o.start(t); o.stop(t+0.05); }
+
+// Sonido sutil de "shaker" al agitar el aerosol (ruido filtrado + envolvente corta)
+function playShaker(intensity=1){
+  if(!ACTX) return;
+  const now = ACTX.currentTime;
+  if(now - (lastShakerT||0) < 0.05) return; // máx ~20 por segundo
+  lastShakerT = now;
+  const src = ACTX.createBufferSource();
+  src.buffer = sprayNoiseBuf; src.loop = false;
+  const bp = ACTX.createBiquadFilter(); bp.type='bandpass'; bp.frequency.value = 5500 + Math.random()*1800; bp.Q.value = 8;
+  const g = ACTX.createGain();
+  const peak = Math.max(0.03, Math.min(0.26, (0.05 + 0.12*intensity) * 1.4)); // +40% de volumen y techo más alto
+  g.gain.setValueAtTime(0.0001, now);
+  g.gain.exponentialRampToValueAtTime(peak, now + 0.01);
+  g.gain.exponentialRampToValueAtTime(0.0001, now + 0.10);
+  src.connect(bp).connect(g).connect(master);
+  src.start(now); src.stop(now + 0.12);
+}
+
+// ===== Canción de cuna (music-box, 3/4 a 84 bpm) =====
+const L_BPM = 84; const L_BEAT = 60/L_BPM; // ~0.714s por negra
+
+// Secuencia: [midi(+12), dur(en negras), acento]
+// A: "Duér-me-te ni-ño, duér-me-te ya"
+// B: "Que vie-ne el co-co y te co-me-rá"
+const L_SEQ = [
+  // A1
+  [67+12,1.2,true],[64+12,0.8,false],[64+12,1.0,false],
+  [65+12,1.2,true],[62+12,0.8,false],[62+12,1.0,false],
+  [60+12,1.2,true],[62+12,0.8,false],[64+12,1.0,false],
+  [65+12,1.2,true],[64+12,0.8,false],[62+12,1.0,false],
+  // B1
+  [67+12,1.2,true],[69+12,0.8,false],[67+12,1.0,false],
+  [65+12,1.2,true],[64+12,0.8,false],[62+12,1.0,false],
+  [60+12,1.2,true],[62+12,0.8,false],[64+12,1.0,false],
+  [60+12,1.2,true],[60+12,0.8,false],[60+12,1.0,false],
+];
+function n2f(m){ return 440*Math.pow(2,(m-69)/12); }
+function scheduleLullabyNote(t, midi, beats, accent){
+  const f1=n2f(midi), f2=n2f(midi+12);
+  const o1=ACTX.createOscillator(); o1.type='sine'; o1.frequency.value=f1;
+  const o2=ACTX.createOscillator(); o2.type='triangle'; o2.frequency.value=f2;
+  const g=ACTX.createGain();
+  const durSec = Math.max(0.25, L_BEAT*beats*0.9);
+  const peak = accent ? 0.16 : 0.11; // acentos un poco más fuertes
+  g.gain.setValueAtTime(0, t);
+  g.gain.linearRampToValueAtTime(peak, t+0.025);
+  g.gain.exponentialRampToValueAtTime(0.0001, t+durSec);
+  o1.connect(g); o2.connect(g); g.connect(lullabyOut);
+  o1.start(t); o2.start(t); o1.stop(t+durSec+0.05); o2.stop(t+durSec+0.05);
+}
+function startLullaby(){
+  if(!ACTX || lullabyOn) return; lullabyOn=true; lullabyStep=0; lullabyNext=ACTX.currentTime+0.05;
+  // fade in
+  lullabyOut.gain.cancelScheduledValues(ACTX.currentTime); lullabyOut.gain.linearRampToValueAtTime(0.0, ACTX.currentTime); lullabyOut.gain.linearRampToValueAtTime(0.8, ACTX.currentTime+1.0);
+  const ahead=0.25; // ventana de scheduling
+  lullabyTimer = setInterval(()=>{
+    const now=ACTX.currentTime;
+    while(lullabyNext < now+ahead && lullabyOn){
+      const i = lullabyStep % L_SEQ.length;
+      const [m, beats, acc] = L_SEQ[i];
+      scheduleLullabyNote(lullabyNext, m, beats, acc);
+      lullabyNext += L_BEAT*beats;
+      lullabyStep++;
+    }
+  }, 50);
+}
+function stopLullaby(){ if(!ACTX) return; lullabyOn=false; if(lullabyTimer){ clearInterval(lullabyTimer); lullabyTimer=null; } const t=ACTX.currentTime; lullabyOut.gain.cancelScheduledValues(t); lullabyOut.gain.linearRampToValueAtTime(0.0, t+0.6); }
+
+// ===== Game Over loop (modo menor, 4/4 a 80 bpm) =====
+const G_BPM = 80; const G_BEAT = 60/G_BPM; const G_DUR = 0.5;
+const G_PATTERN = [57,60,64,60, 57,55,52,50]; // A3 C4 E4 C4 | A3 G3 E3 D3
+function scheduleGONote(t, midi){
+  const f1=n2f(midi);
+  const o=ACTX.createOscillator(); o.type='square'; o.frequency.value=f1;
+  const g=ACTX.createGain(); g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(0.10, t+0.02); g.gain.exponentialRampToValueAtTime(0.0001, t+G_DUR);
+  o.connect(g).connect(goOut); o.start(t); o.stop(t+G_DUR+0.05);
+}
+function startGameOverMusic(){
+  if(!ACTX || goOn) return; goOn=true; goStep=0; goNext=ACTX.currentTime+0.05;
+  goOut.gain.cancelScheduledValues(ACTX.currentTime); goOut.gain.linearRampToValueAtTime(0.0, ACTX.currentTime); goOut.gain.linearRampToValueAtTime(0.9, ACTX.currentTime+0.4);
+  const ahead=0.25;
+  goTimer = setInterval(()=>{
+    const now=ACTX.currentTime;
+    while(goNext < now+ahead && goOn){
+      scheduleGONote(goNext, G_PATTERN[goStep%G_PATTERN.length]);
+      goNext += G_BEAT*0.75; // un poco más apurado
+      goStep++;
+    }
+  }, 50);
+}
+function stopGameOverMusic(){ if(!ACTX) return; goOn=false; if(goTimer){ clearInterval(goTimer); goTimer=null; } const t=ACTX.currentTime; goOut.gain.cancelScheduledValues(t); goOut.gain.linearRampToValueAtTime(0.0, t+0.35); }
+
+// ===== Bucle ======
+function loop(t){ const dt=((t-(loop._last||t))/1000)||0; loop._last=t; draw(); update(Math.max(0,Math.min(0.1,dt))); requestAnimationFrame(loop); }
+requestAnimationFrame(loop);
+
+// ===== "Tests" rápidos (no invasivos) ======
+(function selfTests(){
+  console.assert(typeof spritesReady === 'object', 'spritesReady debe existir');
+  console.assert(typeof coneRange === 'function' && coneRange() >= 0, 'coneRange >= 0');
+  console.assert(typeof coneHalf === 'function' && coneHalf() >= 0, 'coneHalf >= 0');
+})();
+</script>
+</body>
+</html>
